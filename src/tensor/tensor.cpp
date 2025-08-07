@@ -164,27 +164,95 @@ void Tensor::debug() const {
 }
 
 bool Tensor::isContiguous() const {
-    TO_BE_IMPLEMENTED();
+    ptrdiff_t expected_stride = 1;
+    for (int i = this->ndim() - 1; i >= 0; i--) {
+        if (this->strides()[i] != expected_stride) {
+            return false;
+        }
+        expected_stride *= this->shape()[i];
+    }
     return true;
 }
 
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    // Check order validity
+    if (order.size() != this->_meta.shape.size()) {
+        throw std::runtime_error("permute order size must match tensor dimensions");
+    }
+    std::vector<bool> seen(order.size(), false);
+    for (auto idx : order) {
+        if (idx >= order.size() || seen[idx]) {
+            throw std::runtime_error("permute order is invalid");
+        }
+        seen[idx] = true;
+    }
+    // Construct new tensor meta
+    std::vector<size_t> new_shape(order.size());
+    std::vector<ptrdiff_t> new_strides(order.size());
+    for (size_t i = 0; i < order.size(); ++i) {
+        new_shape[i] = _meta.shape[order[i]];
+        new_strides[i] = _meta.strides[order[i]];
+    }
+    TensorMeta new_meta = _meta;
+    new_meta.shape = std::move(new_shape);
+    new_meta.strides = std::move(new_strides);
+    // Create new tensor, share storage
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage));
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    // Check contiguous and shape compatibility
+    if (!this->isContiguous()) {
+        throw std::runtime_error("view() requires contiguous tensor");
+    }
+    size_t new_numel = 1;
+    for (auto dim : shape) {
+        new_numel *= dim;
+    }
+    if (new_numel != this->numel()) {
+        throw std::runtime_error("view() shape is incompatible with number of elements");
+    }
+    // Construct new tensor meta
+    std::vector<ptrdiff_t> new_strides(shape.size());
+    size_t stride = 1;
+    for (int i = shape.size() - 1; i >= 0; --i) {
+        new_strides[i] = stride;
+        stride *= shape[i];
+    }
+    TensorMeta new_meta = this->_meta;
+    new_meta.shape = shape;
+    new_meta.strides = new_strides;
+    // Create new tensor, share storage
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, this->_storage));
 }
 
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    // Note: range is [start, end)
+    // Check dim, start, and end validity
+    if (dim >= this->_meta.shape.size()) {
+        throw std::runtime_error("slice: dim out of range");
+    }
+    if (start > end || end > this->_meta.shape[dim]) {
+        throw std::runtime_error("slice: invalid start or end");
+    }
+    // Construct new tensor meta
+    std::vector<size_t> new_shape = this->_meta.shape;
+    new_shape[dim] = end - start;
+    std::vector<ptrdiff_t> new_strides = this->_meta.strides;
+    size_t new_offset = this->_offset + start * new_strides[dim] * this->elementSize();
+    TensorMeta new_meta = this->_meta;
+    new_meta.shape = std::move(new_shape);
+    new_meta.strides = std::move(new_strides);
+    // Create new tensor, share storage
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage, new_offset));
 }
 
 void Tensor::load(const void *src_) {
-    TO_BE_IMPLEMENTED();
+    core::context().runtime().api()->memcpy_sync(
+        (void *) src_,
+        this->data(),
+        this->numel() * this->elementSize(),
+        LLAISYS_MEMCPY_H2D);
 }
 
 tensor_t Tensor::contiguous() const {
