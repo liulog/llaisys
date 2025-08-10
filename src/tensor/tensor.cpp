@@ -249,8 +249,8 @@ tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
 
 void Tensor::load(const void *src_) {
     core::context().runtime().api()->memcpy_sync(
-        (void *) src_,
         this->data(),
+        (void *) src_,
         this->numel() * this->elementSize(),
         LLAISYS_MEMCPY_H2D);
 }
