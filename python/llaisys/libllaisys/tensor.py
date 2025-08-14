@@ -63,6 +63,10 @@ def load_tensor(lib):
     lib.tensorView.argtypes = [llaisysTensor_t, POINTER(c_size_t), c_size_t]
     lib.tensorView.restype = llaisysTensor_t
 
+    # Function: tensorReshape(llaisysTensor_t tensor, size_t *shape);
+    lib.tensorReshape.argtypes = [llaisysTensor_t, POINTER(c_size_t), c_size_t]
+    lib.tensorReshape.restype = llaisysTensor_t
+
     # Function: tensorPermute(llaisysTensor_t tensor, size_t *order);
     lib.tensorPermute.argtypes = [llaisysTensor_t, POINTER(c_size_t)]
     lib.tensorPermute.restype = llaisysTensor_t

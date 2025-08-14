@@ -27,24 +27,25 @@ void rms_norm_(T *out, const T *in, const T *weight, const float eps, size_t bat
         for (size_t i = 0; i < in_width; ++i) {
             if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
                 float val_f = llaisys::utils::cast<float>(in_row[i]);
-                sum_sq += val_f * val_f;
+                sum_sq = std::fmaf(val_f, val_f, sum_sq);
             } else {
-                sum_sq += in_row[i] * in_row[i];
+                float val_f = in_row[i];
+                sum_sq = std::fmaf(val_f, val_f, sum_sq);
             }
         }
-        float rms;
+        float inv_rms;
         if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
-            rms = std::sqrt(sum_sq / llaisys::utils::cast<float>(in_width) + eps);
+            inv_rms = 1.0f / std::sqrt(sum_sq / llaisys::utils::cast<float>(in_width) + eps);
         } else {
-            rms = std::sqrt(sum_sq / in_width + eps);
+            inv_rms = 1.0f / std::sqrt(sum_sq / in_width + eps);
         }
         for (size_t i = 0; i < out_width; ++i) {
             if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
-                float val_f = llaisys::utils::cast<float>(in_row[i]) / rms;
+                float val_f = llaisys::utils::cast<float>(in_row[i]) * inv_rms;
                 val_f *= llaisys::utils::cast<float>(weight[i]);
                 out_row[i] = llaisys::utils::cast<T>(val_f);
             } else {
-                out_row[i] = in_row[i] / rms * weight[i];
+                out_row[i] = in_row[i] * inv_rms * weight[i];
             }
         }
     }

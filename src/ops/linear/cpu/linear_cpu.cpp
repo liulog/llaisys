@@ -23,7 +23,7 @@ void linear_(T *out, const T *in, const T *weight, const T *bias, size_t batch_s
             for (size_t j = 0; j < out_width; ++j) {
                 float sum = bias==nullptr ? 0.0f : llaisys::utils::cast<float>(bias[j]);
                 for (size_t k = 0; k < in_width; ++k) {
-                    sum += llaisys::utils::cast<float>(in[i * in_width + k]) * llaisys::utils::cast<float>(weight[j * in_width + k]);
+                    sum = std::fmaf(llaisys::utils::cast<float>(in[i * in_width + k]), llaisys::utils::cast<float>(weight[j * in_width + k]), sum);
                 }
                 out[i * out_width + j] = llaisys::utils::cast<T>(sum);
             }
@@ -33,7 +33,7 @@ void linear_(T *out, const T *in, const T *weight, const T *bias, size_t batch_s
             for (size_t j = 0; j < out_width; ++j) {
                 float sum = bias==nullptr ? 0.0f : bias[j];
                 for (size_t k = 0; k < in_width; ++k) {
-                    sum += in[i * in_width + k] * weight[j * in_width + k];
+                    sum = std::fmaf(in[i * in_width + k], weight[j * in_width + k], sum);
                 }
                 out[i * out_width + j] = sum;
             }
@@ -47,15 +47,15 @@ void linear(std::byte *out, std::byte *in, std::byte *weight, std::byte *bias, l
     switch (type) {
     case LLAISYS_DTYPE_F32:
         return linear_(reinterpret_cast<float *>(out), reinterpret_cast<float *>(in),
-                    reinterpret_cast<float *>(weight), reinterpret_cast<float *>(bias), 
+                    reinterpret_cast<float *>(weight), bias ? reinterpret_cast<float *>(bias): nullptr, 
                     batch_size, in_width, out_width);
     case LLAISYS_DTYPE_BF16:
         return linear_(reinterpret_cast<llaisys::bf16_t *>(out), reinterpret_cast<llaisys::bf16_t *>(in),
-                    reinterpret_cast<llaisys::bf16_t *>(weight), reinterpret_cast<llaisys::bf16_t *>(bias), 
+                    reinterpret_cast<llaisys::bf16_t *>(weight), bias ? reinterpret_cast<llaisys::bf16_t *>(bias): nullptr, 
                     batch_size, in_width, out_width);
     case LLAISYS_DTYPE_F16:
         return linear_(reinterpret_cast<llaisys::fp16_t *>(out), reinterpret_cast<llaisys::fp16_t *>(in),
-                    reinterpret_cast<llaisys::fp16_t *>(weight), reinterpret_cast<llaisys::fp16_t *>(bias), 
+                    reinterpret_cast<llaisys::fp16_t *>(weight), bias ? reinterpret_cast<llaisys::fp16_t *>(bias): nullptr, 
                     batch_size, in_width, out_width);
     default:
         EXCEPTION_UNSUPPORTED_DATATYPE(type);

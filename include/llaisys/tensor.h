@@ -54,6 +54,11 @@ __C {
         size_t * shape,
         size_t ndim);
 
+    __export llaisysTensor_t tensorReshape(
+        llaisysTensor_t tensor,
+        size_t * shape,
+        size_t ndim);
+
     __export llaisysTensor_t tensorPermute(
         llaisysTensor_t tensor,
         size_t * order);

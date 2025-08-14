@@ -24,10 +24,12 @@
  */
 template <typename T>
 void self_attention_(T *attn_val, const T *q, const T *k, const T * v, const float scale, size_t seqlen, size_t nhead, size_t dv, size_t d, size_t total_len, size_t nkvhead) {
-    size_t group = nhead / nkvhead; // group > 1 means key/value heads are shared by multiple query heads
+    // Note: group > 1 means: one kvhead are shared by group query heads
+    ASSERT(nhead >= nkvhead && nhead % nkvhead == 0, "Here: nhead >= nkvhead && nhead %%nkvhead == 0");
+    size_t group = nhead / nkvhead;
     
-    std::vector<double> logits(total_len); // used for softmax calculation
-    std::vector<double> weights(total_len);
+    std::vector<float> logits(total_len); // used for softmax calculation
+    std::vector<float> weights(total_len); // temp vector for QK^T*scale's result
 
     // A = Q K^T * scale      [seqlen, nhead, d] * [total_len, nkvhead, d] -> [seqlen, nhead, total_len]
     // B = causal_softmax(A)    [seqlen, nhead, total_len] -> [seqlen, nhead, total_len]
@@ -37,22 +39,22 @@ void self_attention_(T *attn_val, const T *q, const T *k, const T * v, const flo
         for (size_t h = 0; h < nhead; ++h) {
             // Calculate the index for query head's corresponding key/value head
             size_t kv_index = (group > 0) ? (h / group) : h;
-            if (kv_index >= nkvhead) kv_index = nkvhead - 1;
             
             // Query vector
             const T* q_ptr = q + (t * nhead + h) * d;
             // 1. A = scale * (Q K^T)
             // [seqlen, nhead, d] * [total_len, nkvhead, d] -> [seqlen, nhead, total_len]
-            double max_logit = -std::numeric_limits<double>::infinity();
+            float max_logit = -std::numeric_limits<float>::infinity();
             for (size_t pos = 0; pos < total_len; ++pos) {
                 // Key vector
                 const T* k_ptr = k + (pos * nkvhead + kv_index) * d;
-                double dot = 0.0f;
+                float dot = 0.0f;
+                // Matrix multiplication: Q * K^T
                 for (size_t j = 0; j < d; ++j) {
-                    double qv, kvv;
+                    float qv, kvv;
                     if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>){
-                        qv = llaisys::utils::cast<double>(q_ptr[j]);
-                        kvv = llaisys::utils::cast<double>(k_ptr[j]);
+                        qv = llaisys::utils::cast<float>(q_ptr[j]);  // [t, h, j]
+                        kvv = llaisys::utils::cast<float>(k_ptr[j]); // [pos, kv_index, j]
                         dot += qv * kvv;
                     }
                     else {
@@ -61,48 +63,50 @@ void self_attention_(T *attn_val, const T *q, const T *k, const T * v, const flo
                         dot += qv * kvv;
                     }
                 }
-                double scaled = dot * scale;
-                logits[pos] = scaled;
-                if (scaled > max_logit && pos >= t) max_logit = scaled;
+                float scaled = dot * scale;
+                if (t >= pos) {  // Upper triangular part is not used in causal attention
+                    logits[pos] = scaled; // Keep the logits for current and past tokens
+                    max_logit = std::max(scaled, max_logit);
+                } else {
+                    logits[pos] = 0.0; // Masking future tokens
+                    weights[pos] = 0.0; // Initialize weights for future tokens
+                }
             }
 
             // 2. B = causal_softmax(A)
             // [seqlen, nhead, total_len] -> [seqlen, nhead, total_len]
-            double sum_exp = 0.0;
-            for (size_t pos = 0; pos < total_len; ++pos) {
-                if (pos > t) {  // t represents current token.
-                    weights[pos] = 0.0f;
-                    continue;
-                }
-                double e = std::exp(static_cast<double>(logits[pos] - max_logit));
+            float sum_exp = 0.0;
+            for (size_t pos = 0; pos < total_len && t >= pos; ++pos) {
+                float e = std::exp(static_cast<float>(logits[pos] - max_logit));
                 weights[pos] = e;
                 sum_exp += e;
             }
-            double inv_sum = (sum_exp == 0.0) ? 0.0f : static_cast<double>(1.0 / sum_exp);
-            for (size_t pos = 0; pos < total_len; ++pos) {
+            ASSERT(sum_exp > 0.0, "Sum of exponentials should be greater than zero.");
+            float inv_sum = static_cast<float>(1.0 / (sum_exp + 1e-6));
+            for (size_t pos = 0; pos < total_len && t >= pos; ++pos) {
                 weights[pos] = weights[pos] * inv_sum;
             }
 
             // 3. Attn = B V
             // [seqlen, nhead, total_len] * [total_len, nkvhead, dv] -> [seqlen, nhead, dv]
             T* out_ptr = attn_val + (t * nhead + h) * dv;
-            std::vector<double> acc(dv, 0.0f);
+            std::vector<float> acc(dv, 0.0f);
 
-            for (size_t pos = 0; pos < total_len; ++pos) {
+            for (size_t pos = 0; pos < total_len && t >= pos; ++pos) {
                 // Value vector
                 const T* v_ptr = v + (pos * nkvhead + kv_index) * dv;
-                double w = weights[pos];
-                if (w == 0.0f) continue;
+                float w = weights[pos];
                 for (size_t m = 0; m < dv; ++m) {
                     if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
-                        acc[m] += w * llaisys::utils::cast<double>(v_ptr[m]);
+                        acc[m] += w * llaisys::utils::cast<float>(v_ptr[m]); // [pos, kv_index, m]
                     }
                     else {
-                        acc[m] += w * static_cast<double>(v_ptr[m]);
+                        acc[m] += w * static_cast<float>(v_ptr[m]);
                     }
                 }
             }
 
+            // 4. Store the result in attn_val
             for (size_t m = 0; m < dv; ++m) {
                 if constexpr (std::is_same_v<T, llaisys::bf16_t> || std::is_same_v<T, llaisys::fp16_t>) {
                     out_ptr[m] = llaisys::utils::cast<T>(acc[m]);

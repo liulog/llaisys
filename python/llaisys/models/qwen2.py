@@ -1,64 +1,124 @@
 from typing import Sequence
 from ..libllaisys import LIB_LLAISYS
+from ..libllaisys.models import load_qwen2, LlaisysQwen2Meta
 from ..libllaisys import DeviceType
 from ..libllaisys import DataType
-from ..tensor import Tensor
+from ..libllaisys import llaisysTensor_t
 import json
-import numpy as np
+import ctypes
 
 from pathlib import Path
 import safetensors
 
+load_qwen2(LIB_LLAISYS)
 
 class Qwen2:
 
     def __init__(self, model_path, device: DeviceType = DeviceType.CPU):
+        # Currently, only CPU is supported
+        assert(device == DeviceType.CPU), "Only CPU and CUDA devices are supported."
+
         self.model_path = Path(model_path)
         self.device = device
-        self.weights = {}
-        # Load model weights from safetensors files
-        # Tempo
-        for file in sorted(self.model_path.glob("*.safetensors")):
-            data = safetensors.safe_open(file, framework="torch", device="cpu")
-            for name in data.keys():
-                tensor = data.get_tensor(name)
-                print(tensor)
-                llaisys_tensor = Tensor(
-                    list(tensor.shape),
-                    dtype=DataType.BF16,
-                    device=DeviceType.CPU,
-                    device_id=0,
-                )
-                print(tensor.data_ptr())
-                llaisys_tensor.load(tensor.data_ptr())
-                print(tensor)
-                # llaisys_tensor.debug()
-                break
-        
+        self.device_id = 0  # means CPU
         # Load model configuration from config.json
         config_path = self.model_path / "config.json"
         with open(config_path, "r") as f:
-            self.config = json.load(f)
+            config = json.load(f)
 
         # Initialize model parameters from configuration
-        self.eos_token_id = self.config.get("eos_token_id")
-        self.hidden_size = self.config.get("hidden_size")
-        self.intermediate_size = self.config.get("intermediate_size")
-        self.max_position_embeddings = self.config.get("max_position_embeddings")
-        self.num_attention_heads = self.config.get("num_attention_heads")
-        self.num_hidden_layers = self.config.get("num_hidden_layers")
-        self.num_key_value_heads = self.config.get("num_key_value_heads")
-        self.rms_norm_eps = self.config.get("rms_norm_eps")
-        self.rope_theta = self.config.get("rope_theta")
-        self.torch_dtype = self.config.get("torch_dtype")
-        self.vocab_size = self.config.get("vocab_size")
+        self.eos_token_id = config.get("eos_token_id")
+        self.hidden_size = config.get("hidden_size")
+        self.intermediate_size = config.get("intermediate_size")
+        self.max_position_embeddings = config.get("max_position_embeddings")
+        self.num_attention_heads = config.get("num_attention_heads")
+        self.num_hidden_layers = config.get("num_hidden_layers")
+        self.num_key_value_heads = config.get("num_key_value_heads")
+        self.rms_norm_eps = config.get("rms_norm_eps")
+        self.rope_theta = config.get("rope_theta")
+        self.torch_dtype = config.get("torch_dtype")
+        self.vocab_size = config.get("vocab_size")
+        self.per_head_dim = self.hidden_size // self.num_attention_heads
+        self.per_kvhead_dim = self.per_head_dim # for Qwen2, dv = d
 
-    def forward(self, input_ids: np.ndarray) -> np.ndarray:
-        embeddings_weight = self.weights["embeddings.word_embeddings.weight"]
-        input_embeds = embeddings_weight[input_ids]
+        # Currently, only bfloat16 is supported
+        assert self.torch_dtype == "bfloat16", "Only bfloat16 is supported currently."
+        self.data_type = DataType.BF16
 
+        meta = LlaisysQwen2Meta(
+            dtype=self.data_type,
+            nlayer=self.num_hidden_layers,
+            hs=self.hidden_size,
+            nh=self.num_attention_heads,
+            nkvh=self.num_key_value_heads,
+            dh=self.per_head_dim,
+            di=self.intermediate_size,
+            maxseq=self.max_position_embeddings,
+            voc=self.vocab_size,
+            epsilon=self.rms_norm_eps,
+            theta=self.rope_theta,
+            end_token=self.eos_token_id
+        )
 
-        return logits
+        device_ids = (ctypes.c_int * 1)(0)
+
+        self.model = LIB_LLAISYS.llaisysQwen2ModelCreate(
+            ctypes.byref(meta),
+            ctypes.c_int(device),
+            device_ids,
+            ctypes.c_int(1)
+        )
+
+        if not self.model:
+            raise RuntimeError("Failed to create Qwen2 model.")
+
+        # Get native weights struct pointer
+        weights = LIB_LLAISYS.llaisysQwen2ModelWeights(self.model)
+        if not weights:
+            raise RuntimeError("Failed to get Qwen2 weights.")
+
+        print("📦 Qwen2: Loading weights...", flush=True)
+
+        for file in sorted(self.model_path.glob("*.safetensors")):
+            print(f"📂 Loading file: {file.name}", flush=True)
+            data = safetensors.safe_open(file, framework="torch", device="cpu")
+
+            # Load embedding and output layers
+            print("🔄 Qwen2: Loading Input/Output Embedding layer weights", flush=True)
+            for name, field in [
+                ("model.embed_tokens.weight", "in_embed"),
+                ("lm_head.weight", "out_embed"),
+                ("model.norm.weight", "out_norm_w")
+            ]:
+                LIB_LLAISYS.tensorLoad(getattr(weights.contents, field), data.get_tensor(name).data_ptr())
+
+            def load_layer_array(field_name, base_name):
+                arr_ptr = getattr(weights.contents, field_name)
+                arr_type = llaisysTensor_t * self.num_hidden_layers
+                arr = ctypes.cast(arr_ptr, ctypes.POINTER(arr_type)).contents
+
+                for i in range(self.num_hidden_layers):
+                    tensor_name = f"model.layers.{i}.{base_name}"
+                    tensor = data.get_tensor(tensor_name)
+                    LIB_LLAISYS.tensorLoad(arr[i], tensor.data_ptr())
+
+            print("🔄 Qwen2: Loading Self-Attention layer weights", flush=True)
+            load_layer_array("attn_norm_w", "input_layernorm.weight")
+            load_layer_array("attn_q_w", "self_attn.q_proj.weight")
+            load_layer_array("attn_q_b", "self_attn.q_proj.bias")
+            load_layer_array("attn_k_w", "self_attn.k_proj.weight")
+            load_layer_array("attn_k_b", "self_attn.k_proj.bias")
+            load_layer_array("attn_v_w", "self_attn.v_proj.weight")
+            load_layer_array("attn_v_b", "self_attn.v_proj.bias")
+            load_layer_array("attn_o_w", "self_attn.o_proj.weight")
+
+            print("🔄 Qwen2: Loading MLP layer weights", flush=True)
+            load_layer_array("mlp_norm_w", "post_attention_layernorm.weight")
+            load_layer_array("mlp_gate_w", "mlp.gate_proj.weight")
+            load_layer_array("mlp_up_w", "mlp.up_proj.weight")
+            load_layer_array("mlp_down_w", "mlp.down_proj.weight")
+
+        print("🎉 Qwen2: All weights loaded successfully!", flush=True)
 
     def generate(
         self,
@@ -68,46 +128,31 @@ class Qwen2:
         top_p: float = 0.8,
         temperature: float = 0.8,
     ):
-        # 1. 初始化上下文tokens列表
+        """
+        Input:
+            inputs: List of input token IDs
+            max_new_tokens: Maximum number of new tokens to generate
+            top_k: Top-k sampling parameter
+            top_p: Top-p (nucleus) sampling parameter
+            temperature: Sampling temperature
+        Output:
+            generated: List of token IDs including the input and generated tokens
+        """    
+        # 1. Init generated tokens list
         generated = list(inputs)
-
+        
         for _ in range(max_new_tokens):
-            # 2. 构造模型输入，比如把 generated 转成模型需要的tensor格式
-            input_ids = np.array(generated, dtype=np.int64)  # 这里用numpy示范
-
-            # 3. 调用模型前向推理，获得下一个token的logits（[vocab_size]）
-            logits = self.forward(input_ids)
-            
-            # 4. 对 logits 做温度调整
-            logits = logits / temperature
-
-            # 5. 应用 Top-k 采样
-            if top_k > 0:
-                indices_to_remove = logits < np.partition(logits, -top_k)[-top_k]
-                logits[indices_to_remove] = -float('Inf')
-
-            # 6. 应用 Top-p (nucleus) 采样
-            if top_p < 1.0:
-                sorted_logits = np.sort(logits)[::-1]
-                sorted_indices = np.argsort(logits)[::-1]
-                cumulative_probs = np.cumsum(np.exp(sorted_logits) / np.sum(np.exp(sorted_logits)))
-                cutoff = np.searchsorted(cumulative_probs, top_p)
-                if cutoff < len(logits):
-                    threshold = sorted_logits[cutoff]
-                    logits[logits < threshold] = -float('Inf')
-
-            # 7. 转成概率分布
-            exp_logits = np.exp(logits - np.max(logits))  # 减max防止溢出
-            probs = exp_logits / np.sum(exp_logits)
-
-            # 8. 根据概率采样下一个token
-            next_token = np.random.choice(len(probs), p=probs)
-
-            # 9. 追加token
+            ntokens = len(generated)
+            TokenArrayType = ctypes.c_int64 * ntokens
+            input_token_array = TokenArrayType(*generated)
+            next_token = LIB_LLAISYS.llaisysQwen2ModelInfer(
+                self.model,
+                input_token_array,
+                ctypes.c_size_t(ntokens)
+            )
             generated.append(next_token)
-
-            # 10. 遇到eos则终止生成
+            print(generated, flush=True)
             if next_token == self.eos_token_id:
                 break
 
-        return []
+        return generated

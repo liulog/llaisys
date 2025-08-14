@@ -24,6 +24,18 @@ void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float
     ASSERT(q->ndim() == 3, "Self-Attention: q tensor must be 3-dimensional.");
     ASSERT(k->ndim() == 3, "Self-Attention: k tensor must be 3-dimensional.");
     ASSERT(v->ndim() == 3, "Self-Attention: v tensor must be 3-dimensional.");
+    // seqlen
+    ASSERT(attn_val->shape()[0] == q->shape()[0], "Self-Attention: seqlen must match between attn_val and q.");
+    // nhead
+    ASSERT(attn_val->shape()[1] == q->shape()[1], "Self-Attention: nhead must match between attn_val and q.");
+    // total_len
+    ASSERT(k->shape()[0] == v->shape()[0], "Self-Attention: total_len must match between k and v.");
+    // nkvhead
+    ASSERT(k->shape()[1] == v->shape()[1], "Self-Attention: nkvhead must match between k and v.");
+    // dv
+    ASSERT(attn_val->shape()[2] == v->shape()[2], "Self-Attention: dv must match between attn_val and v.");
+    // d
+    ASSERT(q->shape()[2] == k->shape()[2], "Self-Attention: d must match between q and k.");
 
     // always support cpu calculation
     if (attn_val->deviceType() == LLAISYS_DEVICE_CPU) {

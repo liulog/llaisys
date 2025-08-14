@@ -197,7 +197,7 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
     new_meta.shape = std::move(new_shape);
     new_meta.strides = std::move(new_strides);
     // Create new tensor, share storage
-    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage));
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage, this->_offset));
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
@@ -223,7 +223,7 @@ tensor_t Tensor::view(const std::vector<size_t> &shape) const {
     new_meta.shape = shape;
     new_meta.strides = new_strides;
     // Create new tensor, share storage
-    return std::shared_ptr<Tensor>(new Tensor(new_meta, this->_storage));
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, this->_storage, this->_offset));
 }
 
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
@@ -257,17 +257,39 @@ void Tensor::load(const void *src_) {
 
 tensor_t Tensor::contiguous() const {
     TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage, this->_offset));
 }
 
 tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    // Check contiguous and shape compatibility
+    if (!this->isContiguous()) {
+        throw std::runtime_error("Reshape failed: tensor must be contiguous");
+    }    
+    size_t new_numel = 1;
+    for (auto d : shape) new_numel *= d;
+    if (this->numel() != new_numel) {
+        throw std::runtime_error("Reshape failed: total number of elements must not change");
+    }
+
+    // Calculate new strides
+    std::vector<ptrdiff_t> new_strides(shape.size());
+    if (!shape.empty()) {
+        new_strides.back() = 1;
+        for (int i = shape.size() - 2; i >= 0; --i) {
+            new_strides[i] = new_strides[i + 1] * shape[i + 1];
+        }
+    }
+
+    // Construct new tensor meta
+    TensorMeta new_meta = this->_meta;
+    new_meta.shape = std::move(shape);
+    new_meta.strides = std::move(new_strides);
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage, this->_offset));
 }
 
 tensor_t Tensor::to(llaisysDeviceType_t device_type, int device) const {
     TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage, this->_offset));
 }
 
 } // namespace llaisys
