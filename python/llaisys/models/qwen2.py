@@ -6,6 +6,7 @@ from ..libllaisys import DataType
 from ..libllaisys import llaisysTensor_t
 import json
 import ctypes
+from modelscope.hub.snapshot_download import snapshot_download
 
 from pathlib import Path
 import safetensors
@@ -18,7 +19,24 @@ class Qwen2:
         # Currently, only CPU is supported
         assert(device == DeviceType.CPU), "Only CPU and CUDA devices are supported."
 
-        self.model_path = Path(model_path)
+        if model_path is not None and Path(model_path).exists():
+            self.model_path = Path(model_path)
+            print(f"Using local model path: {self.model_path}", flush=True)
+        else:
+            print("Model path not provided or does not exist. Downloading from ModelScope...", flush=True)
+            model_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+            self.model_path = Path(snapshot_download(model_id))
+            print(f"Model downloaded to: {self.model_path}", flush=True)
+        
+        # Check if related model files exist
+        config_file = self.model_path / "config.json"
+        weights_file = self.model_path / "model.safetensors"
+        if not config_file.exists():
+            raise FileNotFoundError(f"{config_file} not found!")
+        if not weights_file.exists():
+            raise FileNotFoundError(f"{weights_file} not found!")
+
+        # Initialize model...
         self.device = device
         self.device_id = 0  # means CPU
         # Load model configuration from config.json
