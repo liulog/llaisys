@@ -52,8 +52,8 @@ void rope_(T *out, const T *in, const int64_t *pos_ids, const float theta, size_
                     double old_b = in_ptr[i + d_half];
                     double new_a = old_a * cos_phi - old_b * sin_phi;
                     double new_b = old_b * cos_phi + old_a * sin_phi;
-                    out_ptr[i] = new_a;
-                    out_ptr[i + d_half] = new_b;
+                    out_ptr[i] = static_cast<float>(new_a);
+                    out_ptr[i + d_half] = static_cast<float>(new_b);
                 }
             }
         }
