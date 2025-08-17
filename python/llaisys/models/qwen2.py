@@ -10,6 +10,7 @@ from modelscope.hub.snapshot_download import snapshot_download
 
 from pathlib import Path
 import safetensors
+import torch    # Used for transferring weights from bf16 to fp32
 
 load_qwen2(LIB_LLAISYS)
 
@@ -17,7 +18,7 @@ class Qwen2:
 
     def __init__(self, model_path, device: DeviceType = DeviceType.CPU):
         # Currently, only CPU is supported
-        assert(device == DeviceType.CPU), "Only CPU and CUDA devices are supported."
+        assert(device == DeviceType.CPU), "Only CPU is supported now."
 
         if model_path is not None and Path(model_path).exists():
             self.model_path = Path(model_path)
@@ -61,7 +62,14 @@ class Qwen2:
 
         # Currently, only bfloat16 is supported
         assert self.torch_dtype == "bfloat16", "Only bfloat16 is supported currently."
-        self.data_type = DataType.BF16
+        # self.data_type = DataType.BF16
+
+        if self.device == DeviceType.CPU:
+            print("⚙️ CPU detected: forcing torch_dtype=float32 for better performance.", flush=True)
+            self.data_type = DataType.F32  # CPU uses float32 for better performance
+        else:
+            assert config.get("torch_dtype") == "bfloat16", "Only bfloat16 is supported currently."
+            self.data_type = DataType.BF16
 
         meta = LlaisysQwen2Meta(
             dtype=self.data_type,
@@ -101,6 +109,11 @@ class Qwen2:
             print(f"📂 Loading file: {file.name}", flush=True)
             data = safetensors.safe_open(file, framework="torch", device="cpu")
 
+            def maybe_cast_tensor(tensor):
+                if self.device == DeviceType.CPU:
+                    return tensor.to(torch.float32).contiguous()
+                return tensor
+
             # Load embedding and output layers
             print("🔄 Qwen2: Loading Input/Output Embedding layer weights", flush=True)
             for name, field in [
@@ -108,7 +121,8 @@ class Qwen2:
                 ("lm_head.weight", "out_embed"),
                 ("model.norm.weight", "out_norm_w")
             ]:
-                LIB_LLAISYS.tensorLoad(getattr(weights.contents, field), data.get_tensor(name).data_ptr())
+                tensor = maybe_cast_tensor(data.get_tensor(name))
+                LIB_LLAISYS.tensorLoad(getattr(weights.contents, field), tensor.data_ptr())
 
             def load_layer_array(field_name, base_name):
                 arr_ptr = getattr(weights.contents, field_name)
@@ -117,7 +131,7 @@ class Qwen2:
 
                 for i in range(self.num_hidden_layers):
                     tensor_name = f"model.layers.{i}.{base_name}"
-                    tensor = data.get_tensor(tensor_name)
+                    tensor = maybe_cast_tensor(data.get_tensor(tensor_name))
                     LIB_LLAISYS.tensorLoad(arr[i], tensor.data_ptr())
 
             print("🔄 Qwen2: Loading Self-Attention layer weights", flush=True)
