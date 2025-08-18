@@ -35,6 +35,11 @@ void self_attention_(T *attn_val, const T *q, const T *k, const T * v, const flo
     // B = causal_softmax(A)    [seqlen, nhead, total_len] -> [seqlen, nhead, total_len]
     // Attn = B V             [seqlen, nhead, total_len] * [total_len, nkvhead, dv] -> [seqlen, nhead, dv]
 
+    // total_len = past_len + seqlen
+    // If kv_cache is used, past_len is the length of cached tokens
+    // If kv_cache is not used, past_len = 0
+    size_t past_len = total_len - seqlen;
+
     for (size_t t = 0; t < seqlen; ++t) {
         for (size_t h = 0; h < nhead; ++h) {
             // Calculate the index for query head's corresponding key/value head
@@ -64,26 +69,26 @@ void self_attention_(T *attn_val, const T *q, const T *k, const T * v, const flo
                     }
                 }
                 float scaled = dot * scale;
-                if (t >= pos) {  // Upper triangular part is not used in causal attention
+                if (t + past_len >= pos) {  // Upper triangular part is not used in causal attention
                     logits[pos] = scaled; // Keep the logits for current and past tokens
                     max_logit = std::max(scaled, max_logit);
                 } else {
-                    logits[pos] = 0.0; // Masking future tokens
-                    weights[pos] = 0.0; // Initialize weights for future tokens
+                    logits[pos] = -std::numeric_limits<float>::infinity(); // Masking future tokens
+                    weights[pos] = -std::numeric_limits<float>::infinity(); // Initialize weights for future tokens
                 }
             }
 
             // 2. B = causal_softmax(A)
             // [seqlen, nhead, total_len] -> [seqlen, nhead, total_len]
             float sum_exp = 0.0;
-            for (size_t pos = 0; pos < total_len && t >= pos; ++pos) {
+            for (size_t pos = 0; pos < total_len && t + past_len >= pos; ++pos) {
                 float e = std::exp(static_cast<float>(logits[pos] - max_logit));
                 weights[pos] = e;
                 sum_exp += e;
             }
             ASSERT(sum_exp > 0.0, "Sum of exponentials should be greater than zero.");
             float inv_sum = static_cast<float>(1.0 / (sum_exp + 1e-6));
-            for (size_t pos = 0; pos < total_len && t >= pos; ++pos) {
+            for (size_t pos = 0; pos < total_len && t + past_len >= pos; ++pos) {
                 weights[pos] = weights[pos] * inv_sum;
             }
 
@@ -92,7 +97,7 @@ void self_attention_(T *attn_val, const T *q, const T *k, const T * v, const flo
             T* out_ptr = attn_val + (t * nhead + h) * dv;
             std::vector<float> acc(dv, 0.0f);
 
-            for (size_t pos = 0; pos < total_len && t >= pos; ++pos) {
+            for (size_t pos = 0; pos < total_len && t + past_len >= pos; ++pos) {
                 // Value vector
                 const T* v_ptr = v + (pos * nkvhead + kv_index) * dv;
                 float w = weights[pos];

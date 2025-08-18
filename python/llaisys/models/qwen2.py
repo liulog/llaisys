@@ -159,6 +159,7 @@ class Qwen2:
         top_k: int = 1,
         top_p: float = 0.8,
         temperature: float = 0.8,
+        use_cache = True
     ):
         """
         Input:
@@ -172,19 +173,68 @@ class Qwen2:
         """    
         # 1. Init generated tokens list
         generated = list(inputs)
-        
-        for _ in range(max_new_tokens):
-            ntokens = len(generated)
-            TokenArrayType = ctypes.c_int64 * ntokens
-            input_token_array = TokenArrayType(*generated)
-            next_token = LIB_LLAISYS.llaisysQwen2ModelInfer(
-                self.model,
-                input_token_array,
-                ctypes.c_size_t(ntokens)
-            )
-            generated.append(next_token)
+
+        # 2. Create KV cache tensors
+        if use_cache:
+            kcache_array = (llaisysTensor_t * self.num_hidden_layers)()
+            vcache_array = (llaisysTensor_t * self.num_hidden_layers)()
+
+            for i in range(self.num_hidden_layers):
+                shape_arr = (ctypes.c_size_t * 3)(
+                    max_new_tokens + len(generated),  # sequence length
+                    self.num_key_value_heads,         # num heads
+                    self.per_kvhead_dim               # per-head dimension
+                )
+                kcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
+                vcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
+        else:
+            kcache_array = ctypes.POINTER(llaisysTensor_t)()
+            vcache_array = ctypes.POINTER(llaisysTensor_t)()
+
+        # 3. Prefill
+        ntokens = len(generated)
+        TokenArrayType = ctypes.c_int64 * ntokens
+        input_token_array = TokenArrayType(*generated)
+
+        next_token = LIB_LLAISYS.llaisysQwen2ModelInfer(
+            self.model,
+            input_token_array,
+            ctypes.c_size_t(ntokens),
+            kcache_array,
+            vcache_array,
+            ctypes.c_size_t(0)   # past_len
+        )
+        generated.append(next_token)
+
+        # 4. Decode
+        for _ in range(max_new_tokens - 1):
             print(generated, flush=True)
             if next_token == self.eos_token_id:
                 break
+            if use_cache:
+                TokenArrayType = ctypes.c_int64 * 1
+                past_len = len(generated) - 1   # past_len is calculated index.
+                input_token_array = TokenArrayType(next_token)
+                next_token = LIB_LLAISYS.llaisysQwen2ModelInfer(
+                    self.model,
+                    input_token_array,
+                    ctypes.c_size_t(1),
+                    kcache_array,
+                    vcache_array,
+                    ctypes.c_size_t(past_len)   # [past_len, past_len + 1]
+                )
+            else:
+                ntokens = len(generated)
+                TokenArrayType = ctypes.c_int64 * ntokens
+                input_token_array = TokenArrayType(*generated)
+                next_token = LIB_LLAISYS.llaisysQwen2ModelInfer(
+                    self.model,
+                    input_token_array,
+                    ctypes.c_size_t(ntokens),
+                    kcache_array, # nullptr
+                    vcache_array, # nullptr
+                    ctypes.c_size_t(0)      # [0, 0 + ntokens]
+                )
+            generated.append(next_token)
 
         return generated

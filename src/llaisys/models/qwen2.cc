@@ -7,7 +7,8 @@
 #include <cmath>
 
 #define DEBUG 0
-#define DEBUG_LAYER_INDEX 27
+#define DEBUG_KV_CACHE 0
+#define DEBUG_LAYER_INDEX 0
 
 __C {
     struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice) {
@@ -206,8 +207,12 @@ __C {
         return model->weights;
     }
 
-    int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken) {
+    int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken, llaisysTensor_t *kcache, llaisysTensor_t *vcache, size_t past_len) {
         if (!model || !token_ids || ntoken == 0) return -1;
+
+        // If kv_cache != nullptr, it means KV Cache is used for performance.
+        bool kv_cache_used = (kcache != nullptr && vcache != nullptr);
+        // kcache [max_seq, nkvh, d], vcache [max_seq, nkvh, dv]
 
         size_t seqlen = ntoken;
         size_t hs = model->meta->hs;       // hidden size
@@ -225,14 +230,17 @@ __C {
         size_t input_tensor_shape[1] = {seqlen};
         llaisysTensor_t input_tensor = tensorCreate(input_tensor_shape, 1, LLAISYS_DTYPE_I64, model->device, model->device_ids[0]);
         tensorLoad(input_tensor, token_ids);
-
+        if(DEBUG){
+            std::cout << std::endl << "input_tensor:" << std::endl;    
+            tensorDebug(input_tensor); // Debugging: print first token's attention output
+        }
         // 2. Embedding lookup: [seqlen] -> [seqlen, hs]
         size_t output_embedding_tensor_shape[2] = {seqlen, hs};
         llaisysTensor_t output_embedding_tensor = tensorCreate(output_embedding_tensor_shape, 2, model->meta->dtype, model->device, model->device_ids[0]);
         llaisysEmbedding(output_embedding_tensor, input_tensor, model->weights->in_embed);        
         if(DEBUG){
             std::cout << std::endl << "output_embedding_tensor:" << std::endl;    
-            tensorDebug(tensorSlice(output_embedding_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+            tensorDebug(tensorSlice(output_embedding_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
         }
         /******************************************************************************************
          *  Embedding Layer has been checked. 
@@ -244,7 +252,10 @@ __C {
         llaisysTensor_t position_ids = tensorCreate(position_shape, 1, LLAISYS_DTYPE_I64, model->device, model->device_ids[0]);
         int64_t* pos_data = (int64_t*)tensorGetData(position_ids);
         for (size_t i = 0; i < seqlen; i++) {
-            pos_data[i] = (int64_t)i;
+            if(kv_cache_used)
+                pos_data[i] = (int64_t)(past_len + i);  // When using KV cache, position ids continue from past_len
+            else
+                pos_data[i] = (int64_t) i;
         }
 
         if(DEBUG) {
@@ -261,7 +272,7 @@ __C {
             llaisysRmsNorm(output_input_layernorm_tensor, output_hidden_layer_tensor, attn_norm_w, rms_eps);
             if(DEBUG && i==DEBUG_LAYER_INDEX) {
                 std::cout << std::endl << "output_input_layernorm_tensor:" << std::endl;    
-                tensorDebug(tensorSlice(output_input_layernorm_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(output_input_layernorm_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
             /******************************************************************************************
              *  Rms Norm Layer has been checked. 
@@ -275,7 +286,7 @@ __C {
             llaisysLinear(q_tensor, output_input_layernorm_tensor, attn_q_w, attn_q_b);
             if(DEBUG && i==DEBUG_LAYER_INDEX) {
                 std::cout << std::endl << "q_tensor:" << std::endl;    
-                tensorDebug(tensorSlice(q_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(q_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
             size_t q_tensor_reshape_shape[3] = {seqlen, nh, dh};
             q_tensor = tensorReshape(q_tensor, q_tensor_reshape_shape, 3);
@@ -283,7 +294,7 @@ __C {
             llaisysROPE(q_rope_tensor, q_tensor, position_ids, rope_theta);
             if(DEBUG && i==DEBUG_LAYER_INDEX) {
                 std::cout << std::endl << "q_rope_tensor:" << std::endl;    
-                tensorDebug(tensorSlice(q_rope_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(q_rope_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
             /******************************************************************************************
              *  Q Proj Layer has been checked. 
@@ -297,15 +308,23 @@ __C {
             llaisysLinear(k_tensor, output_input_layernorm_tensor, attn_k_w, attn_k_b);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "k_tensor:" << std::endl;    
-                tensorDebug(tensorSlice(k_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(k_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
             size_t k_tensor_reshape_shape[3] = {seqlen, nkvh, dh};
             k_tensor = tensorReshape(k_tensor, k_tensor_reshape_shape, 3);
-            llaisysTensor_t k_rope_tensor = tensorCreate(k_tensor_reshape_shape, 3, model->meta->dtype, model->device, model->device_ids[0]);
+            llaisysTensor_t k_rope_tensor; 
+            if (kv_cache_used) {
+                // When using KV cache, we need to update the kcache tensor
+                // kcache shape: [max_seq, nkvh, dh]
+                // Slice the kcache to get the current position to update
+                k_rope_tensor = tensorSlice(kcache[i], 0, past_len, past_len + seqlen); // Write to kcache
+            } else {
+                k_rope_tensor = tensorCreate(k_tensor_reshape_shape, 3, model->meta->dtype, model->device, model->device_ids[0]);
+            }
             llaisysROPE(k_rope_tensor, k_tensor, position_ids, rope_theta);
             if(DEBUG && i==DEBUG_LAYER_INDEX) {
                 std::cout << std::endl << "k_rope_tensor:" << std::endl;    
-                tensorDebug(tensorSlice(k_rope_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(k_rope_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
             /******************************************************************************************
              *  K Proj Layer has been checked. 
@@ -315,24 +334,45 @@ __C {
             llaisysTensor_t attn_v_w = model->weights->attn_v_w[i];
             llaisysTensor_t attn_v_b = model->weights->attn_v_b[i];
             size_t v_tensor_shape[2] = {seqlen, nkvh * dh};
-            llaisysTensor_t v_tensor = tensorCreate(v_tensor_shape, 2, model->meta->dtype, model->device, model->device_ids[0]);
+            llaisysTensor_t v_tensor;
+            if (kv_cache_used) {
+                // When using KV cache, we need to update the vcache tensor
+                // vcache shape: [max_seq, nkvh, dh]
+                // Slice the vcache to get the current position to update
+                v_tensor = tensorView(tensorSlice(vcache[i], 0, past_len, past_len + seqlen), v_tensor_shape, 2);
+            } else {
+                v_tensor = tensorCreate(v_tensor_shape, 2, model->meta->dtype, model->device, model->device_ids[0]);
+            }
             llaisysLinear(v_tensor, output_input_layernorm_tensor, attn_v_w, attn_v_b);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "v_tensor:" << std::endl;
-                tensorDebug(tensorSlice(v_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(v_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
-            size_t v_tensor_reshape_shape[3] = {seqlen, nkvh, dh};
-            v_tensor = tensorReshape(v_tensor, v_tensor_reshape_shape, 3);
-            /******************************************************************************************
-             *  V Proj Layer has been checked. 
-             *******************************************************************************************/
 
             // 3.5 Self-attention
             size_t output_self_attn_multihead_tensor_shape[3] = {seqlen, nh, dh};
             llaisysTensor_t output_self_attn_tensor = tensorCreate(output_self_attn_multihead_tensor_shape, 3, model->meta->dtype, model->device, model->device_ids[0]);
-            llaisysSelfAttention(output_self_attn_tensor, q_rope_tensor, k_rope_tensor, v_tensor, scale);
+            
+            if (kv_cache_used) {
+                // Use KV cache to speed up inference
+                // kcache [max_seq, nkvh, d], vcache [max_seq, nkvh, dv]
+                k_rope_tensor = tensorSlice(kcache[i], 0, 0, past_len + seqlen);
+                v_tensor = tensorSlice(vcache[i], 0, 0, past_len + seqlen);
+                llaisysSelfAttention(output_self_attn_tensor, q_rope_tensor, k_rope_tensor, v_tensor, scale);
+            } else {
+                size_t v_tensor_reshape_shape[3] = {seqlen, nkvh, dh};
+                v_tensor = tensorReshape(v_tensor, v_tensor_reshape_shape, 3);
+                /******************************************************************************************
+                 *  V Proj Layer has been checked. 
+                *******************************************************************************************/
+                llaisysSelfAttention(output_self_attn_tensor, q_rope_tensor, k_rope_tensor, v_tensor, scale);
+            }
             size_t output_self_attn_tensor_shape[2] = {seqlen, nh * dh};
             output_self_attn_tensor = tensorReshape(output_self_attn_tensor, output_self_attn_tensor_shape, 2);
+            if (DEBUG && i==DEBUG_LAYER_INDEX){
+                std::cout << std::endl << "output_self_attn_tensor:" << std::endl;
+                tensorDebug(output_self_attn_tensor); // Debugging: print first token's attention output
+            }
 
             // 3.6 Self-attention output projection
             llaisysTensor_t attn_o_w = model->weights->attn_o_w[i];
@@ -341,7 +381,7 @@ __C {
             llaisysLinear(o_tensor, output_self_attn_tensor, attn_o_w, nullptr);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "o_tensor:" << std::endl;
-                tensorDebug(tensorSlice(o_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(o_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
             /******************************************************************************************
              *  O Proj Layer has been checked. 
@@ -353,7 +393,7 @@ __C {
             llaisysAdd(output_res1_tensor, output_hidden_layer_tensor, o_tensor);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "output_res1_tensor:" << std::endl;
-                tensorDebug(tensorSlice(output_res1_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(output_res1_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
 
             // 3.8 Post-attention LayerNorm
@@ -363,7 +403,7 @@ __C {
             llaisysRmsNorm(output_post_self_attn_layernorm_tensor, output_res1_tensor, post_attn_norm_w, rms_eps);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "output_post_self_attn_layernorm_tensor:" << std::endl;
-                tensorDebug(tensorSlice(output_post_self_attn_layernorm_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(output_post_self_attn_layernorm_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
 
             // 3.9 MLP (Gate, Up, Down)
@@ -376,7 +416,7 @@ __C {
             llaisysLinear(mlp_gate_tensor, output_post_self_attn_layernorm_tensor, mlp_gate_w, nullptr);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "mlp_gate_tensor:" << std::endl;
-                tensorDebug(tensorSlice(mlp_gate_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(mlp_gate_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
 
             size_t mlp_up_tensor_shape[2] = {seqlen, di};
@@ -384,7 +424,7 @@ __C {
             llaisysLinear(mlp_up_tensor, output_post_self_attn_layernorm_tensor, mlp_up_w, nullptr);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "mlp_up_tensor:" << std::endl;
-                tensorDebug(tensorSlice(mlp_up_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(mlp_up_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
 
             size_t swiglu_tensor_shape[2] = {seqlen, di};
@@ -392,7 +432,7 @@ __C {
             llaisysSwiGLU(swiglu_tensor, mlp_gate_tensor, mlp_up_tensor);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "swiglu_tensor:" << std::endl;
-                tensorDebug(tensorSlice(swiglu_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(swiglu_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
 
             size_t mlp_down_tensor_shape[2] = {seqlen, hs};
@@ -400,7 +440,7 @@ __C {
             llaisysLinear(mlp_down_tensor, swiglu_tensor, mlp_down_w, nullptr);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "mlp_down_tensor:" << std::endl;
-                tensorDebug(tensorSlice(mlp_down_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(mlp_down_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
             }
             /******************************************************************************************
              * MLP Layer has been checked. 
@@ -410,7 +450,20 @@ __C {
             llaisysAdd(output_hidden_layer_tensor, output_res1_tensor, mlp_down_tensor);
             if(DEBUG && i==DEBUG_LAYER_INDEX){
                 std::cout << std::endl << "output_hidden_layer_tensor:" << std::endl;
-                tensorDebug(tensorSlice(output_hidden_layer_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+                tensorDebug(tensorSlice(output_hidden_layer_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
+            }
+
+            /**********************************************************************************************
+             *  Check KV Cache
+             **********************************************************************************************/
+            if(DEBUG_KV_CACHE && i==DEBUG_LAYER_INDEX){
+                tensorDebug(k_rope_tensor);
+                tensorDebug(v_tensor);
+            }
+
+            if(!kv_cache_used){
+                tensorDestroy(k_rope_tensor);
+                tensorDestroy(v_tensor);
             }
 
             // release intermediate tensors
@@ -418,8 +471,6 @@ __C {
             tensorDestroy(q_tensor);
             tensorDestroy(q_rope_tensor);
             tensorDestroy(k_tensor);
-            tensorDestroy(k_rope_tensor);
-            tensorDestroy(v_tensor);
             tensorDestroy(output_self_attn_tensor);
             tensorDestroy(o_tensor);
             tensorDestroy(output_res1_tensor);
@@ -437,7 +488,7 @@ __C {
         llaisysRmsNorm(output_final_layernorm_tensor, output_hidden_layer_tensor, final_layernorm_w, rms_eps);
         if(DEBUG){
             std::cout << std::endl << "output_final_layernorm_tensor:" << std::endl;
-            tensorDebug(tensorSlice(output_final_layernorm_tensor, 0, 0, 1)); // Debugging: print first token's attention output
+            tensorDebug(tensorSlice(output_final_layernorm_tensor, 0, seqlen-1, seqlen)); // Debugging: print first token's attention output
         }
         /******************************************************************************************
          * Final Layernorm Layer has been checked. 
