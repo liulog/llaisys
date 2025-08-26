@@ -4,15 +4,15 @@ target("llaisys-device-nv")
     set_languages("cxx17")
     set_warnings("all", "error")
 
-    add_rules("cuda")
-    add_defines("USE_CUDA")
+    ---------------------------------------------------
+    -- Important! Relocatable Device Code
+    set_values("cuda.rdc", false)
+    ---------------------------------------------------
+
+    add_cugencodes("native")
 
     if not is_plat("windows") then
         add_cuflags("-O3", "-Xcompiler=-fPIC")
-    end
-
-    if is_plat("windows") then
-        add_cuflags("-O3")
     end
 
     add_files("../src/device/nvidia/*.cu")
@@ -27,19 +27,17 @@ target("llaisys-ops-nv")
     set_languages("cxx17")
     set_warnings("all", "error")
 
-    add_rules("cuda")
-    add_defines("USE_CUDA")
+    ---------------------------------------------------
+    -- Important! Relocatable Device Code
+    set_values("cuda.rdc", false)
+    ---------------------------------------------------
+
+    add_cugencodes("native")
 
     if not is_plat("windows") then
         add_cuflags("-O3", "-Xcompiler=-fPIC")
     end
 
-    -- Windows：MSVC / MinGW / Clang
-    if is_plat("windows") then
-        add_cuflags("-O3")
-    end
-
-    -- CUDA 源文件
     add_files("../src/ops/*/nvidia/*.cu")
 
     on_install(function (target) end)
