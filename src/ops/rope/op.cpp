@@ -4,6 +4,10 @@
 
 #include "cpu/rope_cpu.hpp"
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/rope_nv.cuh"
+#endif
+
 namespace llaisys::ops {
 /**
  * @brief Rotary Position Embedding (RoPE)
@@ -33,8 +37,7 @@ void rope(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
         return cpu::rope(out->data(), in->data(), pos_ids->data(), theta, in->dtype(), in->shape()[0], in->shape()[1], in->shape()[2]);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        TO_BE_IMPLEMENTED();
-        return;
+        return nvidia::rope(out->data(), in->data(), pos_ids->data(), theta, in->dtype(), in->shape()[0], in->shape()[1], in->shape()[2]);
 #endif
     default:
         EXCEPTION_UNSUPPORTED_DEVICE;

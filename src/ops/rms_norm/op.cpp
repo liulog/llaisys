@@ -4,6 +4,10 @@
 
 #include "cpu/rms_norm_cpu.hpp"
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/rms_norm_nv.cuh"
+#endif
+
 namespace llaisys::ops {
 /**
  * @brief Root Mean Square Normalization (RMS Norm)
@@ -33,8 +37,7 @@ void rms_norm(tensor_t out, tensor_t in, tensor_t weight, float eps) {
         return cpu::rms_norm(out->data(), in->data(), weight->data(), eps, weight->dtype(), in->shape()[0], in->shape()[1], out->shape()[1]);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        TO_BE_IMPLEMENTED();
-        return;
+        return nvidia::rms_norm(out->data(), in->data(), weight->data(), eps, weight->dtype(), in->shape()[0], in->shape()[1], out->shape()[1]);
 #endif
     default:
         EXCEPTION_UNSUPPORTED_DEVICE;

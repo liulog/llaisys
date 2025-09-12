@@ -4,6 +4,10 @@
 
 #include "cpu/swiglu_cpu.hpp"
 
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/swiglu_nv.cuh"
+#endif
+
 namespace llaisys::ops {
 /**
  * @brief SwiGLU activation function
@@ -30,8 +34,7 @@ void swiglu(tensor_t out, tensor_t gate, tensor_t up) {
         return cpu::swiglu(out->data(), gate->data(), up->data(), out->dtype(), out->shape()[0], out->shape()[1]);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        TO_BE_IMPLEMENTED();
-        return;
+        return nvidia::swiglu(out->data(), gate->data(), up->data(), out->dtype(), out->shape()[0], out->shape()[1]);
 #endif
     default:
         EXCEPTION_UNSUPPORTED_DEVICE;
