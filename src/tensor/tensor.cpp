@@ -288,8 +288,16 @@ tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
 }
 
 tensor_t Tensor::to(llaisysDeviceType_t device_type, int device) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage, this->_offset));
+    if (core::context().runtime().deviceType() != LLAISYS_DEVICE_NVIDIA || device_type != LLAISYS_DEVICE_CPU || device != 0) {
+        throw std::runtime_error("Current to() only supports transfer from GPU to CPU");
+    }
+    auto storage = core::context().runtime().allocateHostStorage(this->_storage->size());
+    core::context().runtime().api()->memcpy_sync(
+        storage->memory(),
+        this->data(),
+        this->numel() * this->elementSize(),
+        LLAISYS_MEMCPY_D2H);
+    return std::shared_ptr<Tensor>(new Tensor(this->_meta, storage, this->_offset));
 }
 
 } // namespace llaisys

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <stdio.h>
 #include <cmath>
+#include <vector>
 
 #define DEBUG 0
 #define DEBUG_KV_CACHE 0
@@ -250,13 +251,15 @@ __C {
         llaisysTensor_t output_hidden_layer_tensor = output_embedding_tensor;
         size_t position_shape[1] = {seqlen};
         llaisysTensor_t position_ids = tensorCreate(position_shape, 1, LLAISYS_DTYPE_I64, model->device, model->device_ids[0]);
-        int64_t* pos_data = (int64_t*)tensorGetData(position_ids);
+        // int64_t* pos_data = (int64_t*)tensorGetData(position_ids);
+        std::vector<int64_t> host_pos(seqlen);
         for (size_t i = 0; i < seqlen; i++) {
             if(kv_cache_used)
-                pos_data[i] = (int64_t)(past_len + i);  // When using KV cache, position ids continue from past_len
+                host_pos[i] = (int64_t)(past_len + i);  // When using KV cache, position ids continue from past_len
             else
-                pos_data[i] = (int64_t) i;
+                host_pos[i] = (int64_t) i;
         }
+        tensorLoad(position_ids, host_pos.data());
 
         if(DEBUG) {
             std::cout << std::endl << "position_ids:" << std::endl; 
@@ -519,6 +522,7 @@ __C {
          * Argmax has been checked. 
          *******************************************************************************************/
 
+        index_tensor = tensorTo(index_tensor, LLAISYS_DEVICE_CPU, 0);
         int64_t index = *((int64_t *) tensorGetData(index_tensor));
 
         tensorDestroy(position_ids);

@@ -68,6 +68,11 @@ __C {
         size_t dim,
         size_t start,
         size_t end);
+
+    __export llaisysTensor_t tensorTo(
+        llaisysTensor_t tensor,
+        llaisysDeviceType_t device_type,
+        int device_id);
 }
 
 #endif // LLAISYS_TENSOR_H

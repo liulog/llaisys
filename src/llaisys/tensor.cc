@@ -101,4 +101,11 @@ __C {
         size_t end) {
         return new LlaisysTensor{tensor->tensor->slice(dim, start, end)};
     }
+
+    llaisysTensor_t tensorTo(
+        llaisysTensor_t tensor,
+        llaisysDeviceType_t device_type,
+        int device_id) {
+        return new LlaisysTensor{tensor->tensor->to(device_type, device_id)};
+    }
 }

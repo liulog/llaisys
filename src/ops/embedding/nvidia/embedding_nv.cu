@@ -22,7 +22,8 @@ __global__ void embedding_kernel(T *out, const int64_t *index, T *weight, size_t
 
 namespace llaisys::ops::nvidia {
 void embedding(std::byte *out, std::byte *index, std::byte *weight, llaisysDataType_t type, size_t index_num, size_t weight_width) {
-    size_t threads_per_block = 256;
+    // Embedding layers don't need many threads per block.
+    size_t threads_per_block = 32;
     size_t num_blocks = (index_num + threads_per_block - 1) / threads_per_block;
     switch (type) {
     case LLAISYS_DTYPE_F32: {

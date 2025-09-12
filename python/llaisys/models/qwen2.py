@@ -18,7 +18,7 @@ class Qwen2:
 
     def __init__(self, model_path, device: DeviceType = DeviceType.CPU):
         # Currently, only CPU is supported
-        assert(device == DeviceType.CPU), "Only CPU is supported now."
+        # assert(device == DeviceType.CPU), "Only CPU is supported now."
 
         if model_path is not None and Path(model_path).exists():
             self.model_path = Path(model_path)

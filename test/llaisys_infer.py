@@ -35,7 +35,7 @@ def llaisys_infer(
         top_k=top_k,
         top_p=top_p,
         temperature=temperature,
-        use_cache=True,  # Enable KV cache for faster inference
+        use_cache=False,  # Enable KV cache for faster inference
     )
 
     return outputs, tokenizer.decode(outputs, skip_special_tokens=True)
