@@ -159,7 +159,8 @@ class Qwen2:
         top_k: int = 1,
         top_p: float = 0.8,
         temperature: float = 0.8,
-        use_cache = True
+        use_cache=True,
+        tokenizer=None
     ):
         """
         Input:
@@ -206,9 +207,11 @@ class Qwen2:
         )
         generated.append(next_token)
 
-        # 4. Decode
+        # Print first token immediately
+        print(tokenizer.decode([next_token], skip_special_tokens=True), end='', flush=True)
+
         for _ in range(max_new_tokens - 1):
-            print(generated, flush=True)
+            # print(generated, flush=True)
             if next_token == self.eos_token_id:
                 break
             if use_cache:
@@ -237,4 +240,6 @@ class Qwen2:
                 )
             generated.append(next_token)
 
+            # Stream the new token output immediately
+            print(tokenizer.decode([next_token], skip_special_tokens=True), end='', flush=True)
         return generated
