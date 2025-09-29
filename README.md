@@ -1,5 +1,34 @@
 # Welcome to LLAISYS
 
+Please prepare DeepSeek-R1-Distill-Qwen-1.5B and place it in the same dir as llaisys.
+
+Note: the ops are written from scratch, so their performance can't be compared with pytorch.
+
+- app/chat_server provides a server which uses fastapi to expose interface for http.
+- app/chat_client provides a web frontend which use streamlit to develop quickly.
+
+### Quick Start:
+```bash
+# compile
+xmake f --nv--gpu=y
+xmake && xmake install && pip install ./python
+
+# start the backend service
+cd apps/chat_server
+uvicorn server:app --reload 
+
+# start the frontend web
+cd apps/chat_client
+streamlit run client.py
+```
+
+### Demo:
+
+![Demo](./assets/image.png)
+
+
+---
+
 <p align="center">
 <a href="README.md" target="README.md">English</a> ｜
 <a href="README_ZN.md" target="README_ZN.md">中文</a>
