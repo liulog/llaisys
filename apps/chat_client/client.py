@@ -73,7 +73,7 @@ if prompt := st.chat_input("Ask me anything!"):
                 model="qwen2",
                 messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
                 stream=True,
-                max_tokens=256,
+                max_tokens=1024,
             )
 
             # Call safe_stream_generator to process the stream response first

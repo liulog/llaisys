@@ -53,6 +53,11 @@ def llaisys_infer_stream(conversation, tokenizer, model, max_new_tokens=1024, to
         add_generation_prompt=True,
         tokenize=False,
     )
+    tokens_without_generation_prompt = tokenizer.apply_chat_template(
+        conversation=conversation,
+        add_generation_prompt=False,
+        tokenize=False,
+    )
     print("Input content:", input_content)
     inputs = tokenizer.encode(input_content)
 
@@ -63,5 +68,6 @@ def llaisys_infer_stream(conversation, tokenizer, model, max_new_tokens=1024, to
         top_p=top_p,
         temperature=temperature,
         use_cache=True,
+        tokens_num=len(tokenizer.encode(tokens_without_generation_prompt))
     ):
         yield f"{tokenizer.decode([int(token)], skip_special_tokens=True)}"

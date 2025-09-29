@@ -88,16 +88,12 @@ async def infer(request: ChatRequest):
         async def generate_response():
             for response_message in llaisys_infer_stream(model=model, tokenizer=tokenizer, conversation=conversation, max_new_tokens=request.max_tokens):
                 response = {
-                    "id": str(uuid.uuid4()),
-                    "object": "chat.completion.chunk",
                     "choices": [
                         {
                             "delta": {
                                 "role": "assistant",
                                 "content": response_message
                             },
-                            "index": 0,
-                            "finish_reason": None
                         }
                     ]
                 }

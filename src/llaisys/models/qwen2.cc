@@ -7,7 +7,7 @@
 #include <cmath>
 #include <vector>
 
-#define DEBUG 1
+#define DEBUG 0
 #define DEBUG_KV_CACHE 0
 #define DEBUG_LAYER_INDEX 0
 

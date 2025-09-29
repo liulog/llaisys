@@ -233,6 +233,7 @@ tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
         throw std::runtime_error("slice: dim out of range");
     }
     if (start > end || end > this->_meta.shape[dim]) {
+        std::cout << "start: " << start << ", end: " << end << ", shape[dim]: " << this->_meta.shape[dim] << std::endl;
         throw std::runtime_error("slice: invalid start or end");
     }
     // Construct new tensor meta

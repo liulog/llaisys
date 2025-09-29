@@ -60,6 +60,10 @@ class Qwen2:
         self.per_head_dim = self.hidden_size // self.num_attention_heads
         self.per_kvhead_dim = self.per_head_dim # for Qwen2, dv = d
 
+        # Self-defined members, used for historical chat aiming at single-user
+        self.init_kvcache_done = False
+        self.last_token_index = 0
+
         # Currently, only bfloat16 is supported
         assert self.torch_dtype == "bfloat16", "Only bfloat16 is supported currently."
         # self.data_type = DataType.BF16
@@ -176,8 +180,8 @@ class Qwen2:
 
         # 2. Create KV cache tensors
         if use_cache:
-            kcache_array = (llaisysTensor_t * self.num_hidden_layers)()
-            vcache_array = (llaisysTensor_t * self.num_hidden_layers)()
+            self.kcache_array = (llaisysTensor_t * self.num_hidden_layers)()
+            self.vcache_array = (llaisysTensor_t * self.num_hidden_layers)()
 
             for i in range(self.num_hidden_layers):
                 shape_arr = (ctypes.c_size_t * 3)(
@@ -185,11 +189,11 @@ class Qwen2:
                     self.num_key_value_heads,         # num heads
                     self.per_kvhead_dim               # per-head dimension
                 )
-                kcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
-                vcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
+                self.kcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
+                self.vcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
         else:
-            kcache_array = ctypes.POINTER(llaisysTensor_t)()
-            vcache_array = ctypes.POINTER(llaisysTensor_t)()
+            self.kcache_array = ctypes.POINTER(llaisysTensor_t)()
+            self.vcache_array = ctypes.POINTER(llaisysTensor_t)()
 
         # 3. Prefill
         ntokens = len(generated)
@@ -200,8 +204,8 @@ class Qwen2:
             self.model,
             input_token_array,
             ctypes.c_size_t(ntokens),
-            kcache_array,
-            vcache_array,
+            self.kcache_array,
+            self.vcache_array,
             ctypes.c_size_t(0)   # past_len
         )
         generated.append(next_token)
@@ -218,8 +222,8 @@ class Qwen2:
                     self.model,
                     input_token_array,
                     ctypes.c_size_t(1),
-                    kcache_array,
-                    vcache_array,
+                    self.kcache_array,
+                    self.vcache_array,
                     ctypes.c_size_t(past_len)   # [past_len, past_len + 1]
                 )
             else:
@@ -230,8 +234,8 @@ class Qwen2:
                     self.model,
                     input_token_array,
                     ctypes.c_size_t(ntokens),
-                    kcache_array, # nullptr
-                    vcache_array, # nullptr
+                    self.kcache_array, # nullptr
+                    self.vcache_array, # nullptr
                     ctypes.c_size_t(0)      # [0, 0 + ntokens]
                 )
             generated.append(next_token)
@@ -246,6 +250,7 @@ class Qwen2:
         top_p: float = 0.8,
         temperature: float = 0.8,
         use_cache=True,
+        tokens_num: int = 0
     ):
         """
         Used for streaming generation.
@@ -255,20 +260,22 @@ class Qwen2:
 
         # 2. Create KV cache tensors
         if use_cache:
-            kcache_array = (llaisysTensor_t * self.num_hidden_layers)()
-            vcache_array = (llaisysTensor_t * self.num_hidden_layers)()
+            if not self.init_kvcache_done:
+                self.init_kvcache_done = True
+                self.kcache_array = (llaisysTensor_t * self.num_hidden_layers)()
+                self.vcache_array = (llaisysTensor_t * self.num_hidden_layers)()
 
-            for i in range(self.num_hidden_layers):
-                shape_arr = (ctypes.c_size_t * 3)(
-                    max_new_tokens + len(generated),  # sequence length
-                    self.num_key_value_heads,         # num heads
-                    self.per_kvhead_dim               # per-head dimension
-                )
-                kcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
-                vcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
+                for i in range(self.num_hidden_layers):
+                    shape_arr = (ctypes.c_size_t * 3)(
+                        max_new_tokens + len(generated),  # sequence length
+                        self.num_key_value_heads,         # num heads
+                        self.per_kvhead_dim               # per-head dimension
+                    )
+                    self.kcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
+                    self.vcache_array[i] = LIB_LLAISYS.tensorCreate(shape_arr, 3, self.data_type, self.device, self.device_id)
         else:
-            kcache_array = ctypes.POINTER(llaisysTensor_t)()
-            vcache_array = ctypes.POINTER(llaisysTensor_t)()
+            self.kcache_array = ctypes.POINTER(llaisysTensor_t)()
+            self.vcache_array = ctypes.POINTER(llaisysTensor_t)()
 
         # 3. Prefill
         ntokens = len(generated)
@@ -279,12 +286,12 @@ class Qwen2:
             self.model,
             input_token_array,
             ctypes.c_size_t(ntokens),
-            kcache_array,
-            vcache_array,
-            ctypes.c_size_t(0)   # past_len
+            self.kcache_array,
+            self.vcache_array,
+            ctypes.c_size_t(self.last_token_index)   # past_len
         )
         generated.append(next_token)
-        yield f"{next_token}"  # 每个 token 后添加换行符
+        yield f"{next_token}"
 
         for _ in range(max_new_tokens - 1):
             # print(generated, flush=True)
@@ -298,9 +305,9 @@ class Qwen2:
                     self.model,
                     input_token_array,
                     ctypes.c_size_t(1),
-                    kcache_array,
-                    vcache_array,
-                    ctypes.c_size_t(past_len)   # [past_len, past_len + 1]
+                    self.kcache_array,
+                    self.vcache_array,
+                    ctypes.c_size_t(self.last_token_index + past_len)   # [past_len, past_len + 1]
                 )
             else:
                 ntokens = len(generated)
@@ -310,10 +317,14 @@ class Qwen2:
                     self.model,
                     input_token_array,
                     ctypes.c_size_t(ntokens),
-                    kcache_array, # nullptr
-                    vcache_array, # nullptr
-                    ctypes.c_size_t(0)
+                    self.kcache_array, # nullptr
+                    self.vcache_array, # nullptr
+                    ctypes.c_size_t(self.last_token_index)
                 )
             generated.append(next_token)
             # print(next_token, flush=True)
-            yield f"{next_token}"  # 每个 token 后添加换行符
+            yield f"{next_token}"
+        
+        # Note: Infer, pass last assistant answer and user input together. (here I want to throw thinking tokens in origin answer)
+        self.last_token_index += tokens_num
+        print("Updated last_token_index:", self.last_token_index, flush=True)
