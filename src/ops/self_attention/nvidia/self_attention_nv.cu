@@ -54,6 +54,7 @@ __global__ void flashAttnKernel(
         if (tx < Bc)
         {
             int k_row = j * Bc + tx;
+            // Per thread load one row of K and V
             for (int x = 0; x < head_dim; ++x)
             {
                 float kval = 0.f, vval = 0.f;
@@ -129,7 +130,12 @@ __global__ void flashAttnKernel(
             float row_l = 0.f;
             for (int y = 0; y < Bc; ++y)
             {
-                S[tx * Bc + y] = expf(S[tx * Bc + y] - row_m);
+                // If (-inf) - (-inf), then expf will generate Nan.
+                // For example, for casual attention, top right triangle part is all -inf.
+                if (S[tx * Bc + y] == -INFINITY)
+                    S[tx * Bc + y] = 0.f;
+                else
+                    S[tx * Bc + y] = expf(S[tx * Bc + y] - row_m);  // Note: here maybe generate Nan, due to （-inf) - (-inf)
                 row_l += S[tx * Bc + y];
             }
             /********************************************************
@@ -177,6 +183,8 @@ void self_attention(std::byte *attn_val, std::byte *q, std::byte *k, std::byte *
     int head_dim = d, src_seq_len = total_len, target_seq_len = seqlen;
     int query_heads = nhead, kv_heads = nkvhead;
     int batch_size = 1;
+    // std::cout << "FlashAttention Config: batch_size=" << batch_size << ", target_seq_len=" << target_seq_len << ", src_seq_len=" << src_seq_len
+    //           << ", query_heads=" << query_heads << ", kv_heads=" << kv_heads << ", head_dim=" << head_dim << std::endl;
 
     int max_smem = 0;
     cudaDeviceGetAttribute(&max_smem, cudaDevAttrMaxSharedMemoryPerBlock, 0);
@@ -198,13 +206,26 @@ void self_attention(std::byte *attn_val, std::byte *q, std::byte *k, std::byte *
     const int Tc = std::ceil((float)(src_seq_len) / Bc);
     const int Tr = std::ceil((float)(target_seq_len) / Br);
     int group_size = query_heads / kv_heads;
+    // std::cout << "FlashAttention Params: Br=" << Br << ", Bc=" << Bc << ", Tr=" << Tr << ", Tc=" << Tc << ", smem_bytes=" << smem_bytes / 1024.0f << "KB" << std::endl;
 
     dim3 grid(batch_size, query_heads);
     dim3 block(Br);
 
     float *d_m, *d_l;
+    // Note: d_m and d_l should be used carefully.
     cudaMalloc(&d_m, sizeof(float) * batch_size * target_seq_len * query_heads);
     cudaMalloc(&d_l, sizeof(float) * batch_size * target_seq_len * query_heads);
+    
+    // Note: initializing attn_val to zero is very important.
+    //      Because in flashAttnKernel, attn_val's old value is used in the calculation of new attn_val.
+    size_t elem_size = 0;
+    switch(type) {
+        case LLAISYS_DTYPE_F32: elem_size = sizeof(float); break;
+        case LLAISYS_DTYPE_BF16: elem_size = sizeof(__nv_bfloat16); break;
+        case LLAISYS_DTYPE_F16: elem_size = sizeof(__nv_half); break;
+        default: EXCEPTION_UNSUPPORTED_DATATYPE(type);
+    }
+    cudaMemset(attn_val, 0, elem_size * batch_size * target_seq_len * query_heads * head_dim);
 
     switch (type) {
     case LLAISYS_DTYPE_F32: {
@@ -249,5 +270,9 @@ void self_attention(std::byte *attn_val, std::byte *q, std::byte *k, std::byte *
     default:
         EXCEPTION_UNSUPPORTED_DATATYPE(type);
     }
+
+    cudaFree(d_m);
+    cudaFree(d_l);
+
 }
 } // namespace llaisys::ops::nvidia

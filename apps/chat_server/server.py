@@ -84,6 +84,7 @@ async def infer(request: ChatRequest):
 
     if request.stream:
         conversation = [message.model_dump() for message in request.messages]
+        print("Received conversation:", conversation, flush=True)
         async def generate_response():
             for response_message in llaisys_infer_stream(model=model, tokenizer=tokenizer, conversation=conversation, max_new_tokens=request.max_tokens):
                 response = {
@@ -100,7 +101,7 @@ async def infer(request: ChatRequest):
                         }
                     ]
                 }
-                print("Generated response:", response)
+                # print("Generated response:", response)
                 yield f"data: {json.dumps(response, ensure_ascii=False)}\n\n"
                 await asyncio.sleep(0)
             # End of stream
